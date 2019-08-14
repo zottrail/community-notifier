@@ -1,6 +1,7 @@
 import java.nio.charset.StandardCharsets
 
 import pureconfig.generic.auto._
+import com.softwaremill.sttp._
 
 sealed trait PureConfigADT
 case class RedditConfig(clientId: String, clientSecret: String) extends PureConfigADT
@@ -16,19 +17,24 @@ object Main {
         println(l)
         throw new IllegalArgumentException("could not find credentials. try client-id / client-secret.")
       }
-      case Right(r) => r.reddit // TODO: Add more return variables
+      case Right(r) => r.reddit // TODO: Add more return variables.
     }
 
-    val req = requests.post(
-      "https://www.reddit.com/api/v1/access_token?grant_type=client_credentials",
-      headers = Map(
-        "Authorization" -> "Basic ".concat(asBase64(s"${config.clientId}:${config.clientSecret}")),
-        "Content-Type"  -> "application/json"
+    val req = sttp
+      .post(uri"https://www.reddit.com/api/v1/access_token?grant_type=client_credentials")
+      .headers(
+        Map(
+          "User-agent"     -> "ZotTrail",
+          "Authorization"  -> "Basic ".concat(asBase64(s"${config.clientId}:${config.clientSecret}"))
+        )
       )
-    )
+      .body() // Avoid 411 (Content-Length: 0) errors.
 
-    if (req.statusCode == 200) {
-      val parsed = ujson.read(req.text).obj
+    implicit val backend = HttpURLConnectionBackend()
+    val res = req.send()
+
+    if (res.code == 200) {
+      val parsed = ujson.read(res.unsafeBody).obj
       val accessToken = parsed("access_token").str
       val expiresIn = parsed("expires_in").num
       println(accessToken, expiresIn)
