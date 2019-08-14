@@ -4,7 +4,8 @@ import pureconfig.generic.auto._
 import com.softwaremill.sttp._
 
 sealed trait PureConfigADT
-case class RedditConfig(clientId: String, clientSecret: String) extends PureConfigADT
+case class RedditOAuthCredentials(clientId: String, clientSecret: String) extends PureConfigADT
+case class RedditConfig(oauth: RedditOAuthCredentials, userAgent: String) extends PureConfigADT
 case class Config(reddit: RedditConfig)
 
 object Main {
@@ -17,15 +18,19 @@ object Main {
         println(l)
         throw new IllegalArgumentException("could not find credentials. try client-id / client-secret.")
       }
-      case Right(r) => r.reddit // TODO: Add more return variables.
+      case Right(r) => r // TODO: Add more return variables.
     }
 
     val req = sttp
       .post(uri"https://www.reddit.com/api/v1/access_token?grant_type=client_credentials")
       .headers(
         Map(
-          "User-agent"     -> "ZotTrail",
-          "Authorization"  -> "Basic ".concat(asBase64(s"${config.clientId}:${config.clientSecret}"))
+          "User-agent"     -> config.reddit.userAgent,
+          "Authorization"  -> "Basic ".concat(
+            asBase64(
+              s"${config.reddit.oauth.clientId}:${config.reddit.oauth.clientSecret}"
+            )
+          )
         )
       )
       .body() // Avoid 411 (Content-Length: 0) errors.
