@@ -29,13 +29,15 @@ object Main {
       }
   }
 
-  case class RedditListingResponse(kind: String)
+  case class RedditListingItem(id: String)
+  case class RedditListingItemContainer(data: RedditListingItem)
+  case class RedditListingResponse(children: List[RedditListingItem])
   implicit val decodeRedditListing: Decoder[RedditListingResponse] = new Decoder[RedditListingResponse] {
     final def apply(c: HCursor): Decoder.Result[RedditListingResponse] =
       for {
-        kind <- c.downField("kind").as[String]
+        children <- c.downField("data").downField("children").as[List[RedditListingItemContainer]]
       } yield {
-        RedditListingResponse(kind)
+        RedditListingResponse(children.map(_.data))
       }
   }
 
