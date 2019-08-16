@@ -28,40 +28,28 @@ object Main {
   def asBase64(str: String): String = java.util.Base64.getEncoder.encodeToString(str.getBytes(StandardCharsets.UTF_8))
 
   def main(args: Array[String]): Unit = {
-    val config = pureconfig.loadConfig[Config] match {
-      // TODO: What should I do here for proper functional programming?
-      case Left(l) => {
-        println(l)
-        throw new IllegalArgumentException("could not find credentials. try client-id / client-secret.")
-      }
-      case Right(r) => r // TODO: Add more return variables.
-    }
+    val response = for {
+      config <- pureconfig.loadConfig[Config]
 
-    val request = sttp
-      .post(uri"https://www.reddit.com/api/v1/access_token?grant_type=client_credentials")
-      .headers(
-        Map(
-          "User-agent"     -> config.reddit.userAgent,
-          "Authorization"  -> "Basic ".concat(
-            asBase64(
-              s"${config.reddit.oauth.clientId}:${config.reddit.oauth.clientSecret}"
+      request = sttp
+        .post(uri"https://www.reddit.com/api/v1/access_token?grant_type=client_credentials")
+        .headers(
+          Map(
+            "User-agent"     -> config.reddit.userAgent,
+            "Authorization"  -> "Basic ".concat(
+              asBase64(
+                s"${config.reddit.oauth.clientId}:${config.reddit.oauth.clientSecret}"
+              )
             )
           )
         )
-      )
-      .body() // Avoid 411 (Content-Length: 0) errors.
-      .response(asJson[AccessTokenResponse])
+        .body() // Avoid 411 (Content-Length: 0) errors.
+        .response(asJson[AccessTokenResponse])
 
-    val response = request.send()
-    val body = response.unsafeBody
-
-    body match {
-      case Left(l) => {
-        println("decodable error:", l)
-      }
-      case Right(r) => {
-        println(r.accessToken, r.expiresIn)
-      }
-    }
+      response = request.send()
+      body <- response.body
+      accessTokenData <- body
+    } yield accessTokenData
+    println("Response", response) // Left(error) or Right(response)
   }
 }
