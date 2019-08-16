@@ -2,8 +2,12 @@ import java.nio.charset.StandardCharsets
 
 import com.softwaremill.sttp._
 import com.softwaremill.sttp.circe._
-import io.circe._, io.circe.generic.auto._, io.circe.parser._, io.circe.syntax._
-import io.circe.{ Decoder, Encoder, HCursor, Json }
+import io.circe.Decoder.Result
+import io.circe._
+import io.circe.generic.auto._
+import io.circe.parser._
+import io.circe.syntax._
+import io.circe.{Decoder, Encoder, HCursor, Json}
 import pureconfig.generic.auto._
 
 sealed trait PureConfigADT
@@ -22,6 +26,16 @@ object Main {
         expiresIn <- c.downField("expires_in").as[Int]
       } yield {
         AccessTokenResponse(accessToken, expiresIn)
+      }
+  }
+
+  case class RedditListingResponse(kind: String)
+  implicit val decodeRedditListing: Decoder[RedditListingResponse] = new Decoder[RedditListingResponse] {
+    final def apply(c: HCursor): Decoder.Result[RedditListingResponse] =
+      for {
+        kind <- c.downField("kind").as[String]
+      } yield {
+        RedditListingResponse(kind)
       }
   }
 
@@ -49,7 +63,21 @@ object Main {
       response = request.send()
       body <- response.body
       accessTokenData <- body
-    } yield accessTokenData
+
+      request = sttp
+        .get(uri"https://oauth.reddit.com/r/uci/hot?limit=25")
+        .headers(
+          Map(
+            "User-agent" -> config.reddit.userAgent,
+            "Authorization" -> "Bearer ".concat(accessTokenData.accessToken)
+          )
+        )
+        .response(asJson[RedditListingResponse])
+
+      response = request.send()
+      body <- response.body
+      listingData <- body
+    } yield listingData
     println("Response", response) // Left(error) or Right(response)
   }
 }
