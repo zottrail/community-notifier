@@ -52,6 +52,13 @@ object Main extends IOApp {
 
   val initializeConfig : IO[Config] = loadConfigF[IO, Config]
 
+  def extractRightFromResponse[A, B](request: Response[Either[A, B]]) = IO {
+    for {
+      body <- request.body
+      response <- body.right
+    } yield response
+  }
+
   def run(args: List[String]): IO[ExitCode] = for {
     config <- initializeConfig
     accessTokenRequest <- sttp
@@ -69,12 +76,7 @@ object Main extends IOApp {
       .body() // Avoid 411 (Content-Length: 0) errors.
       .response(asJson[AccessTokenResponse])
       .send()
-    accessTokenResponse <- IO {
-      for {
-        accessTokenBody <- accessTokenRequest.body
-        accessTokenResponse <- accessTokenBody.right
-      } yield accessTokenResponse
-    }
+    accessTokenResponse <- extractRightFromResponse(accessTokenRequest)
     redditListingRequest <- sttp
       .get(uri"https://oauth.reddit.com/r/uci/hot?limit=25")
       .headers(
@@ -85,12 +87,7 @@ object Main extends IOApp {
       )
       .response(asJson[RedditListingResponse])
       .send()
-    redditListingResponse <- IO {
-      for {
-        redditListingBody <- redditListingRequest.body
-        redditListingResponse <- redditListingBody.right
-      } yield redditListingResponse
-    }
+    redditListingResponse <- extractRightFromResponse(redditListingRequest)
     _ = println(redditListingResponse.right.get)
   } yield ExitCode.Success
 }
