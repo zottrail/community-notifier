@@ -48,6 +48,59 @@ object Main extends IOApp {
       }
   }
 
+  case class RedditPostTitle(text: String, url: String)
+  case class RedditPostTitleContainer(children: List[RedditPostTitle])
+  implicit val decodeRedditPostTitle: Decoder[RedditPostTitle] = new Decoder[RedditPostTitle] {
+    final def apply(c: HCursor): Decoder.Result[RedditPostTitle] =
+      for {
+        text <- c.downField("data").downField("selftext").as[String]
+        url <- c.downField("data").downField("url").as[String]
+      } yield {
+        RedditPostTitle(text, url)
+      }
+  }
+  implicit val decodeRedditPostTitleContainer: Decoder[RedditPostTitleContainer] = new Decoder[RedditPostTitleContainer] {
+    final def apply(c: HCursor): Decoder.Result[RedditPostTitleContainer] = {
+      for {
+        children <- c.downField("data").downField("children").as[List[RedditPostTitle]]
+      } yield {
+        RedditPostTitleContainer(children)
+      }
+    }
+  }
+
+  case class RedditPostComment(body: String, permalink: String)
+  case class RedditPostCommentContainer(children: List[RedditPostComment])
+  implicit val decodeRedditPostComment: Decoder[RedditPostComment] = new Decoder[RedditPostComment] {
+    final def apply(c: HCursor): Decoder.Result[RedditPostComment] =
+      for {
+        text <- c.downField("data").downField("body").as[String]
+        permalink <- c.downField("data").downField("permalink").as[String]
+      } yield {
+        RedditPostComment(text, s"https://www.reddit.com$permalink")
+      }
+  }
+  implicit val decodeRedditPostCommentContainer: Decoder[RedditPostCommentContainer] = new Decoder[RedditPostCommentContainer] {
+    final def apply(c: HCursor): Decoder.Result[RedditPostCommentContainer] =
+      for {
+        children <- c.downField("data").downField("children").as[List[RedditPostComment]]
+      } yield {
+        RedditPostCommentContainer(children)
+      }
+  }
+
+  case class RedditPostResponse(op: RedditPostTitle, comments: List[RedditPostComment])
+  implicit val decodeRedditPost: Decoder[RedditPostResponse] = new Decoder[RedditPostResponse] {
+    final def apply(c: HCursor): Decoder.Result[RedditPostResponse] =
+      for {
+        tuple <- c.as[(RedditPostTitleContainer, RedditPostCommentContainer)]
+        op = tuple._1
+        commentTree = tuple._2
+      } yield {
+        RedditPostResponse(op.children.head, commentTree.children)
+      }
+  }
+
   def asBase64(str: String): String = java.util.Base64.getEncoder.encodeToString(str.getBytes(StandardCharsets.UTF_8))
 
   val initializeConfig : IO[Config] = loadConfigF[IO, Config]
@@ -78,7 +131,7 @@ object Main extends IOApp {
       .send()
     accessTokenResponse <- extractRightFromResponse(accessTokenRequest)
     redditListingRequest <- sttp
-      .get(uri"https://oauth.reddit.com/r/uci/hot?limit=25")
+      .get(uri"https://oauth.reddit.com/r/uci/hot?limit=5")
       .headers(
         Map(
           "User-agent" -> config.reddit.userAgent,
@@ -88,6 +141,20 @@ object Main extends IOApp {
       .response(asJson[RedditListingResponse])
       .send()
     redditListingResponse <- extractRightFromResponse(redditListingRequest)
-    _ = println(redditListingResponse.right.get)
+    data = redditListingResponse.right.get
+    id = data.children.take(2).head.id
+    redditPostRequest <- sttp
+      .get(uri"https://oauth.reddit.com/r/uci/comments/$id")
+      .headers(
+        Map(
+          "User-agent" -> config.reddit.userAgent,
+          "Authorization" -> "Bearer ".concat(accessTokenResponse.right.get.accessToken)
+        )
+      )
+      .response(asJson[RedditPostResponse])
+      .send()
+    redditPostResponse <- extractRightFromResponse(redditPostRequest)
+    _ = println(redditPostResponse.right.get.op.url)
+    _ = println(redditPostResponse.right.get.comments.map(c => c.permalink))
   } yield ExitCode.Success
 }
