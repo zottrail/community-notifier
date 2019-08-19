@@ -1,21 +1,20 @@
 import java.nio.charset.StandardCharsets
 
-import cats.effect.{ContextShift, ExitCode, IO, IOApp}
+import cats.{Monad}
+import cats.effect.{ExitCode, IO, IOApp}
 import com.softwaremill.sttp._
 import com.softwaremill.sttp.asynchttpclient.cats.AsyncHttpClientCatsBackend
 import com.softwaremill.sttp.circe._
-
 import io.circe.Decoder.Result
 import io.circe._
 import io.circe.generic.auto._
 import io.circe.parser._
 import io.circe.syntax._
-import io.circe.{Decoder, Encoder, HCursor, Json}
-
+import io.circe.{Decoder, HCursor}
 import pureconfig.generic.auto._
 import pureconfig.module.catseffect._
 
-import scala.concurrent.ExecutionContext.Implicits.global
+//import scala.concurrent.ExecutionContext.Implicits.global
 
 sealed trait PureConfigADT
 case class RedditOAuthCredentials(clientId: String, clientSecret: String) extends PureConfigADT
@@ -24,6 +23,65 @@ case class Config(reddit: RedditConfig)
 
 object Main extends IOApp {
   implicit val backend: SttpBackend[IO, Nothing] = AsyncHttpClientCatsBackend[IO]()
+
+  trait RedditClient {
+    def authorize(): IO[AccessTokenResponse]
+    def hot(accessToken: String): IO[RedditListingResponse]
+    def get(accessToken: String, id: String): IO[RedditPostResponse]
+    // def all(accessToken: String, id: List[String]): F[List[RedditPostResponse]]
+  }
+
+  class RedditClientInterpreter(val config: Config) extends RedditClient {
+    def authorize(): IO[AccessTokenResponse] = for {
+      response <- sttp
+      .post(uri"https://www.reddit.com/api/v1/access_token?grant_type=client_credentials")
+      .headers(Map(withUserAgent, withBasicAuthorization))
+      .body() // Avoid 411 (Content-Length: 0) errors.
+      .response(asJson[AccessTokenResponse])
+      .send()
+      result <- extractRightFromResponse(response)
+      token = result.right.get
+    } yield token
+
+    override def hot(accessToken: String): IO[RedditListingResponse] = for {
+      response <- sttp
+      .get(uri"https://oauth.reddit.com/r/uci/hot?limit=5")
+      .headers(Map(withUserAgent, withBearerAuthorization(accessToken)))
+      .response(asJson[RedditListingResponse])
+      .send()
+      result <- extractRightFromResponse(response)
+      listing = result.right.get
+    } yield listing
+
+    override def get(accessToken: String, id: String): IO[RedditPostResponse] = for {
+      response <- sttp
+      .get(uri"https://oauth.reddit.com/r/uci/comments/$id")
+      .headers(Map(withUserAgent, withBearerAuthorization(accessToken)))
+      .response(asJson[RedditPostResponse])
+      .send()
+      result <- extractRightFromResponse(response)
+      post = result.right.get
+    } yield post
+
+    // override def all(accessToken: String, id: List[String]): F[List[RedditPostResponse]] = ???
+
+    private def withUserAgent = "User-agent" -> config.reddit.userAgent
+
+    private def withBasicAuthorization =
+      "Authorization" -> "Basic ".concat(
+        asBase64(
+          s"${config.reddit.oauth.clientId}:${config.reddit.oauth.clientSecret}"
+        )
+      )
+
+    private def withBearerAuthorization(accessToken: String)=
+      "Authorization" -> "Bearer ".concat(accessToken)
+  }
+
+  object RedditClientInterpreter {
+    def apply[F[_]: Monad](config: Config): RedditClientInterpreter =
+      new RedditClientInterpreter(config)
+  }
 
   case class AccessTokenResponse(accessToken: String, expiresIn: Int)
   implicit val decodeAccessToken: Decoder[AccessTokenResponse] = new Decoder[AccessTokenResponse] {
@@ -112,49 +170,19 @@ object Main extends IOApp {
     } yield response
   }
 
+  def doRedditIO(config: Config): IO[RedditPostResponse] = {
+    val reddit = RedditClientInterpreter(config)
+    for {
+      accessTokenResponse <- reddit.authorize()
+      listing <- reddit.hot(accessTokenResponse.accessToken)
+      post <- reddit.get(accessTokenResponse.accessToken, listing.children.take(1).head.id)
+    } yield post
+  }
+
   def run(args: List[String]): IO[ExitCode] = for {
     config <- initializeConfig
-    accessTokenRequest <- sttp
-      .post(uri"https://www.reddit.com/api/v1/access_token?grant_type=client_credentials")
-      .headers(
-        Map(
-          "User-agent" -> config.reddit.userAgent,
-          "Authorization" -> "Basic ".concat(
-            asBase64(
-              s"${config.reddit.oauth.clientId}:${config.reddit.oauth.clientSecret}"
-            )
-          )
-        )
-      )
-      .body() // Avoid 411 (Content-Length: 0) errors.
-      .response(asJson[AccessTokenResponse])
-      .send()
-    accessTokenResponse <- extractRightFromResponse(accessTokenRequest)
-    redditListingRequest <- sttp
-      .get(uri"https://oauth.reddit.com/r/uci/hot?limit=5")
-      .headers(
-        Map(
-          "User-agent" -> config.reddit.userAgent,
-          "Authorization" -> "Bearer ".concat(accessTokenResponse.right.get.accessToken)
-        )
-      )
-      .response(asJson[RedditListingResponse])
-      .send()
-    redditListingResponse <- extractRightFromResponse(redditListingRequest)
-    data = redditListingResponse.right.get
-    id = data.children.take(2).head.id
-    redditPostRequest <- sttp
-      .get(uri"https://oauth.reddit.com/r/uci/comments/$id")
-      .headers(
-        Map(
-          "User-agent" -> config.reddit.userAgent,
-          "Authorization" -> "Bearer ".concat(accessTokenResponse.right.get.accessToken)
-        )
-      )
-      .response(asJson[RedditPostResponse])
-      .send()
-    redditPostResponse <- extractRightFromResponse(redditPostRequest)
-    _ = println(redditPostResponse.right.get.op.url)
-    _ = println(redditPostResponse.right.get.comments.map(c => c.permalink))
+    post <- doRedditIO(config)
+    _ = println(post.op.url)
+    _ = println(post.comments.map(c => c.permalink))
   } yield ExitCode.Success
 }
