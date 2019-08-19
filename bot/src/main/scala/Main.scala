@@ -14,8 +14,6 @@ import io.circe.{Decoder, HCursor}
 import pureconfig.generic.auto._
 import pureconfig.module.catseffect._
 
-//import scala.concurrent.ExecutionContext.Implicits.global
-
 sealed trait PureConfigADT
 case class RedditOAuthCredentials(clientId: String, clientSecret: String) extends PureConfigADT
 case class RedditConfig(oauth: RedditOAuthCredentials, userAgent: String) extends PureConfigADT
@@ -25,43 +23,40 @@ object Main extends IOApp {
   implicit val backend: SttpBackend[IO, Nothing] = AsyncHttpClientCatsBackend[IO]()
 
   trait RedditClient {
-    def authorize(): IO[AccessTokenResponse]
-    def hot(accessToken: String): IO[RedditListingResponse]
-    def get(accessToken: String, id: String): IO[RedditPostResponse]
+    def authorize(): IO[Either[Any, AccessTokenResponse]]
+    def hot(accessToken: String): IO[Either[Any, RedditListingResponse]]
+    def get(accessToken: String, id: String): IO[Either[Any, RedditPostResponse]]
     // def all(accessToken: String, id: List[String]): F[List[RedditPostResponse]]
   }
 
   class RedditClientInterpreter(val config: Config) extends RedditClient {
-    def authorize(): IO[AccessTokenResponse] = for {
+    def authorize(): IO[Either[Any, AccessTokenResponse]] = for {
       response <- sttp
       .post(uri"https://www.reddit.com/api/v1/access_token?grant_type=client_credentials")
       .headers(Map(withUserAgent, withBasicAuthorization))
       .body() // Avoid 411 (Content-Length: 0) errors.
       .response(asJson[AccessTokenResponse])
       .send()
-      result <- extractRightFromResponse(response)
-      token = result.right.get
-    } yield token
+      eitherToken <- extractRightFromResponse(response)
+    } yield eitherToken
 
-    override def hot(accessToken: String): IO[RedditListingResponse] = for {
+    override def hot(accessToken: String): IO[Either[Any, RedditListingResponse]] = for {
       response <- sttp
       .get(uri"https://oauth.reddit.com/r/uci/hot?limit=5")
       .headers(Map(withUserAgent, withBearerAuthorization(accessToken)))
       .response(asJson[RedditListingResponse])
       .send()
-      result <- extractRightFromResponse(response)
-      listing = result.right.get
-    } yield listing
+      eitherListing <- extractRightFromResponse(response)
+    } yield eitherListing
 
-    override def get(accessToken: String, id: String): IO[RedditPostResponse] = for {
+    override def get(accessToken: String, id: String): IO[Either[Any, RedditPostResponse]] = for {
       response <- sttp
       .get(uri"https://oauth.reddit.com/r/uci/comments/$id")
       .headers(Map(withUserAgent, withBearerAuthorization(accessToken)))
       .response(asJson[RedditPostResponse])
       .send()
-      result <- extractRightFromResponse(response)
-      post = result.right.get
-    } yield post
+      eitherPost <- extractRightFromResponse(response)
+    } yield eitherPost
 
     // override def all(accessToken: String, id: List[String]): F[List[RedditPostResponse]] = ???
 
@@ -163,19 +158,25 @@ object Main extends IOApp {
 
   val initializeConfig : IO[Config] = loadConfigF[IO, Config]
 
-  def extractRightFromResponse[A, B](request: Response[Either[A, B]]) = IO {
+  def extractRightFromResponse[A](request: Response[Either[DeserializationError[Error], A]]) = IO {
     for {
       body <- request.body
-      response <- body.right
+      response <- body
     } yield response
   }
 
+  // Should I make this use Either?
+  // Something feels worng about this code... This will obviously throw exceptions,
+  // but I'm unclear as to how I should make multiple Either's interact with multiple IO's.
   def doRedditIO(config: Config): IO[RedditPostResponse] = {
     val reddit = RedditClientInterpreter(config)
     for {
-      accessTokenResponse <- reddit.authorize()
-      listing <- reddit.hot(accessTokenResponse.accessToken)
-      post <- reddit.get(accessTokenResponse.accessToken, listing.children.take(1).head.id)
+      eitherAccessTokenResponse <- reddit.authorize()
+      accessTokenResponse = eitherAccessTokenResponse.right.get
+      eitherListing <- reddit.hot(accessTokenResponse.accessToken)
+      listing = eitherListing.right.get
+      eitherPost <- reddit.get(accessTokenResponse.accessToken, listing.children.take(1).head.id)
+      post = eitherPost.right.get
     } yield post
   }
 
